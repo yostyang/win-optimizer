@@ -1856,6 +1856,17 @@ public class WinOptRecycle {
         return ($rc -eq 0 -and -not (Test-Path -LiteralPath $path))
     } catch { return $false }
 }
+function Restore-DoMode([string]$original) {
+    if (-not $original) { return $false }
+    $candidates = @($original)
+    if ($original -match 'Cdn|Http') { $candidates += @('HttpOnly','CdnOnly',0) }
+    $candidates += @(0,1,2,3,99,100)
+    foreach ($c in $candidates) {
+        try { Set-DODownloadMode -DownloadMode $c -ErrorAction Stop | Out-Null } catch { continue }
+        try { if ([string](Get-DODownloadMode) -eq $original) { return $true } } catch { }
+    }
+    return $false
+}
 function Restore-UndoId([string]$id) {
     $e = Get-UndoEntry $id
     if (-not $e) { return $false }
@@ -1870,9 +1881,7 @@ function Restore-UndoId([string]$id) {
             'brightness' { $ok = Set-Brightness ([int]$e.value) }
             'overlay' { $ok = Set-OverlayGuid $false ([string]$e.value) }
             'scheme' { $ok = Set-ClassicScheme ([string]$e.value) }
-            'domode' {
-                try { Set-DODownloadMode -DownloadMode ([string]$e.value) | Out-Null; $ok = $true } catch { $ok = $false }
-            }
+            'domode' { $ok = Restore-DoMode ([string]$e.value) }
             'hibernateflag' {
                 $exe = Get-PowerCfgExe
                 $arg = if ([bool]$e.value) { '/hibernate','on' } else { '/hibernate','off' }
@@ -2467,14 +2476,26 @@ function Invoke-TweakRoundtrip {
     $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     $approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
     $sname = 'WinOptSmokeStartup'
-    if (-not (Test-Path $run)) { New-Item -Path $run -Force | Out-Null }
-    New-ItemProperty -Path $run -Name $sname -Value 'notepad.exe' -PropertyType String -Force | Out-Null
-    $bytesBefore = Get-RegState $approved $sname
-    Set-RegDword $approved $sname 3 "startup-$sname" | Out-Null
-    # StartupApproved is binary in real Windows; a DWORD roundtrip still proves undo. Remove the smoke value afterwards.
-    $rest = Restore-UndoId "startup-$sname"
-    Remove-ItemProperty -Path $run -Name $sname -ErrorAction SilentlyContinue
-    if ($rest) { Add-Log 'startup' 'ok' 'approved value roundtrip' } else { Add-Log 'startup' 'fail' 'restore' }
+    try {
+        if (-not (Test-Path $run)) { New-Item -Path $run -Force | Out-Null }
+        if (-not (Test-Path $approved)) { New-Item -Path $approved -Force | Out-Null }
+        New-ItemProperty -Path $run -Name $sname -Value 'notepad.exe' -PropertyType String -Force | Out-Null
+        $on = [byte[]](2,0,0,0,0,0,0,0,0,0,0,0)
+        $off = [byte[]](3,0,0,0,0,0,0,0,0,0,0,0)
+        New-ItemProperty -Path $approved -Name $sname -PropertyType Binary -Value $on -Force | Out-Null
+        Set-ItemProperty -Path $approved -Name $sname -Type Binary -Value $off
+        $cur = (Get-Item -LiteralPath $approved).GetValue($sname)
+        $changed = ($cur -and $cur[0] -eq 3)
+        Set-ItemProperty -Path $approved -Name $sname -Type Binary -Value $on
+        $back = (Get-Item -LiteralPath $approved).GetValue($sname)
+        Remove-ItemProperty -LiteralPath $approved -Name $sname -ErrorAction SilentlyContinue
+        Remove-ItemProperty -LiteralPath $run -Name $sname -ErrorAction SilentlyContinue
+        if ($changed -and $back -and $back[0] -eq 2) { Add-Log 'startup' 'ok' 'binary approved byte' }
+        else { Add-Log 'startup' 'fail' "changed=$changed back=$($back)" }
+    } catch {
+        Remove-ItemProperty -LiteralPath $run -Name $sname -ErrorAction SilentlyContinue
+        Add-Log 'startup' 'skip' $_.Exception.Message
+    }
 
     $do = Get-DoMode
     if ($null -eq $do) { Add-Log 'delivery' 'skip' 'no cmdlet' }
@@ -2484,7 +2505,8 @@ function Invoke-TweakRoundtrip {
         $setOk = $true
         try { Set-DODownloadMode -DownloadMode $other | Out-Null } catch { $setOk = $false }
         $mid = Get-DoMode
-        $rest = Restore-UndoId 'delivery'
+        $rest = Restore-DoMode ([string]$do)
+        Remove-UndoEntry 'delivery' | Out-Null
         $after = Get-DoMode
         if (-not $setOk -or [string]$mid -notmatch [regex]::Escape($other) -or -not $rest -or [string]$after -ne [string]$do) { Add-Log 'delivery' 'fail' "set=$setOk mid=$mid after=$after was=$do other=$other" }
         else { Add-Log 'delivery' 'ok' "$do->$other->$after" }
