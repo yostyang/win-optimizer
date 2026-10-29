@@ -1011,6 +1011,39 @@ function Add-CpuSampleIssues($m) {
         }
     } catch { }
 }
+function Measure-CpuWindow([int]$ms) {
+    $cores = [Math]::Max(1, [Environment]::ProcessorCount)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $tA = [WinOpt.Native]::ReadCpuTimes()
+    $snap = @{}
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+        if ($p.Id -le 4) { continue }
+        try { $snap[$p.Id] = [double]$p.TotalProcessorTime.TotalMilliseconds } catch { }
+    }
+    Start-Sleep -Milliseconds $ms
+    $tB = [WinOpt.Native]::ReadCpuTimes()
+    $elapsed = [Math]::Max(1, $sw.ElapsedMilliseconds)
+    $avg = $null
+    if ($tA -and $tB -and @($tA).Count -ge 3 -and @($tB).Count -ge 3) {
+        $idle = [int64]$tB[0] - [int64]$tA[0]
+        $total = ([int64]$tB[1] - [int64]$tA[1]) + ([int64]$tB[2] - [int64]$tA[2])
+        if ($total -gt 0 -and $idle -ge 0 -and $idle -le $total) {
+            $avg = [int][math]::Round(100.0 * ($total - $idle) / [double]$total)
+            if ($avg -lt 0) { $avg = 0 }
+            if ($avg -gt 100) { $avg = 100 }
+        }
+    }
+    $rows = @()
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+        if (-not $snap.ContainsKey($p.Id)) { continue }
+        try { $t = [double]$p.TotalProcessorTime.TotalMilliseconds } catch { continue }
+        $cpu = ($t - [double]$snap[$p.Id]) / $elapsed / $cores * 100
+        if ($cpu -lt 3) { continue }
+        $rows += [pscustomobject]@{ Id = [int]$p.Id; Name = [string]$p.ProcessName; Pct = [int][math]::Round($cpu) }
+    }
+    $top = @($rows | Sort-Object Pct -Descending | Select-Object -First 8)
+    return [pscustomobject]@{ Avg = $avg; Procs = $top; Gen = [int]$script:CheckGen }
+}
 function Start-CpuCheckSample([int]$ms, [int]$gen, [scriptblock]$done) {
     # 采样放在后台，界面不用卡住 2 秒。只在点「体检」时跑一次，不做持续轮询。
     Start-Bg {
@@ -2803,13 +2836,20 @@ while ($true) { Start-Sleep -Seconds 5 }
         if ($results.checks.powerRoundtrip -eq 'unread') { $results.errors += 'could not switch power mode or classic saver plan' }
 
         try { Invoke-Checkup } catch { $results.errors += "checkup: $($_.Exception.Message)" }
-        $deadline = (Get-Date).AddSeconds(20)
+        $deadline = (Get-Date).AddSeconds(25)
         while (-not $script:CpuCheckDone -and (Get-Date) -lt $deadline) {
             Poll-Bg
             [Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [Windows.Threading.DispatcherPriority]::Background) | Out-Null
             Start-Sleep -Milliseconds 100
         }
-        if (-not $script:CpuCheckDone) { $results.errors += 'cpu checkup timed out' }
+        if (-not $script:CpuCheckDone) {
+            # 加压进程把 CPU 占满时，后台采样线程可能迟迟排不上。改在界面线程上补采一拍。
+            try {
+                $sync = Measure-CpuWindow 1200
+                Add-CpuSampleIssues $sync
+                Finish-Checkup
+            } catch { $results.errors += "cpu checkup timed out: $($_.Exception.Message)" }
+        }
         $results.checks.checkup = [bool]$script:CpuCheckDone
         $results.checks.score = [string]$ui.ScoreText.Text
         $results.checks.issues = @($script:Issues | ForEach-Object { $_.Title })
