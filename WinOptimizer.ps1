@@ -2284,6 +2284,16 @@ function Add-TipCheckupIssues {
 }
 function Update-TipsUi {
     if (-not $ui.TipsHost) { return }
+    try { Update-TipsUiCore } catch {
+        $ui.TipsHost.Children.Clear()
+        $tb = New-Object Windows.Controls.TextBlock
+        $tb.Text = "优化建议加载失败：$($_.Exception.Message)"
+        $tb.TextWrapping = 'Wrap'
+        $tb.Foreground = (Brush $C.Bad)
+        [void]$ui.TipsHost.Children.Add($tb)
+    }
+}
+function Update-TipsUiCore {
     $ui.TipsHost.Children.Clear()
     $groups = @(
         @{ Title = '电源与电池'; Note = ''; Ids = @('overlay','esbatt','screen','standbynet','hibernate','throttle','usb','sleepstudy','surface','wu') }
@@ -2305,7 +2315,7 @@ function Update-TipsUi {
         $h.Text = $g.Title
         $h.FontSize = 15
         $h.FontWeight = 'SemiBold'
-        $h.Margin = '0,10,0,4'
+        $h.Margin = New-Object Windows.Thickness 0,10,0,4
         $h.Foreground = (Brush $C.Ink)
         [void]$ui.TipsHost.Children.Add($h)
         if ($g.Note) {
@@ -2313,7 +2323,7 @@ function Update-TipsUi {
             $n.Text = $g.Note
             $n.Foreground = (Brush $C.Mute)
             $n.TextWrapping = 'Wrap'
-            $n.Margin = '0,0,0,6'
+            $n.Margin = New-Object Windows.Thickness 0,0,0,6
             [void]$ui.TipsHost.Children.Add($n)
         }
         foreach ($id in $g.Ids) {
@@ -2321,10 +2331,10 @@ function Update-TipsUi {
             $card = New-Object Windows.Controls.Border
             $card.Background = (Brush $C.Card)
             $card.BorderBrush = (Brush $C.Line)
-            $card.BorderThickness = '1'
-            $card.CornerRadius = '12'
-            $card.Padding = '12,10'
-            $card.Margin = '0,0,0,8'
+            $card.BorderThickness = New-Object Windows.Thickness 1
+            $card.CornerRadius = New-Object Windows.CornerRadius 12
+            $card.Padding = New-Object Windows.Thickness 12,10,12,10
+            $card.Margin = New-Object Windows.Thickness 0,0,0,8
             $dock = New-Object Windows.Controls.DockPanel
             $btns = New-Object Windows.Controls.StackPanel
             $btns.Orientation = 'Horizontal'
@@ -2377,12 +2387,12 @@ function Update-TipsUi {
             $t1.Foreground = (Brush $C.Ink)
             $t2 = New-Object Windows.Controls.TextBlock
             $t2.Text = $line.State
-            $t2.Margin = '0,2,0,0'
+            $t2.Margin = New-Object Windows.Thickness 0,2,0,0
             $t2.Foreground = (Brush $C.Ink)
             $t3 = New-Object Windows.Controls.TextBlock
             $t3.Text = $line.Detail
             $t3.TextWrapping = 'Wrap'
-            $t3.Margin = '0,2,12,0'
+            $t3.Margin = New-Object Windows.Thickness 0,2,12,0
             $t3.Foreground = (Brush $C.Mute)
             [void]$stack.Children.Add($t1)
             [void]$stack.Children.Add($t2)
@@ -2634,7 +2644,7 @@ $ui.Tabs.Add_SelectionChanged({
     param($s, $e)
     if ($e.OriginalSource -ne $ui.Tabs) { return }
     switch ($ui.Tabs.SelectedIndex) {
-        1 { Update-Processes; Update-PowerPlan } 2 { Update-Startup } 3 { Update-Browsers } 4 { Update-Dns } 5 { Update-Display } 6 { Update-Battery } 7 { Update-TipsUi }
+        1 { Update-Processes; Update-PowerPlan } 2 { Update-Startup } 3 { Update-Browsers } 4 { Update-Dns } 5 { Update-Display } 6 { Update-Battery } 7 { try { Update-TipsUi } catch { } }
     }
 })
 
@@ -2839,7 +2849,7 @@ while ($true) { Start-Sleep -Seconds 5 }
         $results.checks.processes = @($ui.ProcList.ItemsSource).Count
 
         for ($t = 0; $t -lt $ui.Tabs.Items.Count; $t++) {
-            $ui.Tabs.SelectedIndex = $t
+            try { $ui.Tabs.SelectedIndex = $t } catch { $results.errors += "tab ${t}: $($_.Exception.Message)" }
             $win.UpdateLayout()
             for ($i = 0; $i -lt 5; $i++) { [Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [Windows.Threading.DispatcherPriority]::Background) | Out-Null; Start-Sleep -Milliseconds 50 }
             $name = switch ($t) { 0 {'checkup'} 1 {'processes'} 2 {'startup'} 3 {'browsers'} 4 {'network'} 5 {'display'} 6 {'battery'} 7 {'tips'} default {"tab$t"} }
