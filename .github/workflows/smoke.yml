@@ -67,7 +67,8 @@ jobs:
         if: always()
         run: |
           $out = 'smoke-out'
-          $md = @("# Windows一键优化 smoke", "", "- Runner: windows-latest", "- Time: $(Get-Date -Format o)", "")
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $md = @("# Windows一键优化 smoke", "", "- Runner: windows-latest（没有 Windows 10 托管机，Win10 路径用 -MockBuild 19045）", "- Time: $(Get-Date -Format o)", "")
           if (Test-Path "$out/results.json") {
             $j = Get-Content "$out/results.json" -Raw | ConvertFrom-Json
             $md += "## Result: $(if ($j.ok) { 'PASS' } else { 'FAIL' })", ""

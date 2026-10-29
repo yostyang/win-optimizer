@@ -1192,6 +1192,19 @@ function Convert-ClassicMode([string]$guid) {
     }
 }
 function Get-PowerCfgExe { Join-Path $env:SystemRoot 'System32\powercfg.exe' }
+function Invoke-PowerCfg {
+    # powercfg 把「参数无效」写到 stderr。Windows PowerShell 5.1 在 ErrorAction=Stop 时会因此中断，这里吞掉。
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$PowerArgs)
+    $exe = Get-PowerCfgExe
+    if (-not (Test-Path -LiteralPath $exe)) { return '' }
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $text = & $exe @PowerArgs 2>&1 | ForEach-Object { "$_" }
+        return (@($text) -join "`n")
+    } catch { return "$_" }
+    finally { $ErrorActionPreference = $prev }
+}
 function Get-ClassicSchemeGuids {
     $exe = Get-PowerCfgExe
     if (-not (Test-Path $exe)) { return @() }
@@ -1217,7 +1230,7 @@ function Get-ActiveOverlayGuid {
     # Windows 10：powercfg /getactiveoverlayscheme。不区分插电/电池两套滑杆（那是 Win11 24H2 的行为）。
     $exe = Get-PowerCfgExe
     if (-not (Test-Path -LiteralPath $exe)) { return $null }
-    try { $out = & $exe /getactiveoverlayscheme 2>&1 | Out-String } catch { return $null }
+    $out = Invoke-PowerCfg /getactiveoverlayscheme
     if (-not $out) { return $null }
     $picked = $null
     foreach ($line in ($out -split "`r?`n")) {
@@ -1734,10 +1747,8 @@ function Restore-RegEntry($e) {
     return [bool](Invoke-Elevated $cmd)
 }
 function Get-PowerDcIndex([string]$sub, [string]$setting) {
-    $exe = Get-PowerCfgExe
-    if (-not (Test-Path -LiteralPath $exe)) { return $null }
-    $out = & $exe /q SCHEME_CURRENT $sub $setting 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { return $null }
+    $out = Invoke-PowerCfg /q SCHEME_CURRENT $sub $setting
+    if ($LASTEXITCODE -ne 0 -or $out -match '(?i)invalid|无效|错误') { return $null }
     $hex = @([regex]::Matches($out, '0x[0-9a-fA-F]+'))
     if ($hex.Count -lt 2) { return $null }
     return @{
@@ -1746,10 +1757,9 @@ function Get-PowerDcIndex([string]$sub, [string]$setting) {
     }
 }
 function Set-PowerDcIndex([string]$sub, [string]$setting, [int]$value) {
-    $exe = Get-PowerCfgExe
-    & $exe /setdcvalueindex SCHEME_CURRENT $sub $setting $value | Out-Null
+    [void](Invoke-PowerCfg /setdcvalueindex SCHEME_CURRENT $sub $setting $value)
     if ($LASTEXITCODE -ne 0) { return $false }
-    & $exe /setactive SCHEME_CURRENT | Out-Null
+    [void](Invoke-PowerCfg /setactive SCHEME_CURRENT)
     return ($LASTEXITCODE -eq 0)
 }
 function Apply-PowerDc([string]$id, [string]$sub, [string]$setting, [int]$want) {
@@ -1764,7 +1774,7 @@ function Apply-PowerDc([string]$id, [string]$sub, [string]$setting, [int]$want) 
 }
 function Get-HibernateInfo {
     $exe = Get-PowerCfgExe
-    try { $out = & $exe /a 2>&1 | Out-String } catch { return @{ Enabled = $false; CanEnable = $false; Unsupported = $true } }
+    $out = Invoke-PowerCfg /a
     $parts = [regex]::Split($out, '(?i)not available on this system|没有以下睡眠状态|以下睡眠状态不可用|不受支持')
     $avail = [string]$parts[0]
     $rest = ''
