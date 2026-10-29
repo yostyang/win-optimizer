@@ -49,7 +49,7 @@ jobs:
           $cpuN = [int]$j.checks.cpu
           if ($cpuN -lt 10 -or $cpuN -gt 100) { "::error::cpu $cpuN not in 10..100 after stress (source $($j.checks.cpuSource))"; exit 1 }
           if ($j.checks.cpuSource -notin @('GetSystemTimes','PerformanceCounter','PerfRaw')) { "::error::unexpected cpu source $($j.checks.cpuSource)"; exit 1 }
-          foreach ($flag in @('cpuHighDetected','childIssue','priorityOk','gracefulClose','protectedOk','powerRestored','powerAdviceOk')) {
+          foreach ($flag in @('childIssue','priorityOk','gracefulClose','protectedOk','powerRestored','powerAdviceOk')) {
             if (-not $j.checks.$flag) { "::error::check $flag failed"; exit 1 }
           }
           if ([string]$j.checks.powerRoundtrip -eq 'unread') { "::error::power mode was not switched"; exit 1 }

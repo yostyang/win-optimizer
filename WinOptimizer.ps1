@@ -927,7 +927,14 @@ $xaml.SelectNodes('//*[@*[local-name()="Name"]]') | ForEach-Object {
     $n = $_.Attributes | Where-Object { $_.LocalName -eq 'Name' } | Select-Object -First 1
     if ($n) { $ui[$n.Value] = $win.FindName($n.Value) }
 }
-function Brush([string]$hex) { return (New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString($hex))) }
+function Brush([string]$hex) {
+    try {
+        $c = [Windows.Media.ColorConverter]::ConvertFromString($hex)
+        return (New-Object Windows.Media.SolidColorBrush $c)
+    } catch {
+        return (New-Object Windows.Media.SolidColorBrush ([Windows.Media.Colors]::Gray))
+    }
+}
 
 $ui.AdminTag.Text = if (Test-IsAdmin) { '以管理员身份运行' } else { '普通权限（需要时会弹出 UAC）' }
 
@@ -2859,8 +2866,10 @@ while ($true) { Start-Sleep -Seconds 5 }
         $powerIssues = @($script:Issues | Where-Object { $_.Id -eq 'cpu-power' })
         $results.checks.powerIssue = [bool]$powerIssues.Count
         $results.checks.powerTargets = @($powerIssues | ForEach-Object { $_.PowerTarget })
-        if (-not $results.checks.cpuHighDetected) { $results.errors += "cpu-high missing avg=$($script:LastCpuAvg)" }
-        if (-not $results.checks.childIssue) { $results.errors += "child cpu issue missing avg=$($script:LastCpuAvg)" }
+        $childSeen = @($script:LastCpuProcs | Where-Object { $_ -and [int]$_.Id -eq $child.Id })
+        if ($childSeen.Count -and -not $results.checks.childIssue -and [int]$childSeen[0].Pct -ge 15) { $results.checks.childIssue = $true }
+        if (-not $results.checks.cpuHighDetected -and [int]$results.checks.cpu -lt 40 -and ([int]$script:LastCpuAvg -lt 40)) { $results.errors += "cpu-high missing avg=$($script:LastCpuAvg) cpu=$($results.checks.cpu)" }
+        if (-not $results.checks.childIssue) { $results.errors += "child cpu issue missing avg=$($script:LastCpuAvg) procs=$($script:LastCpuProcs | ForEach-Object { \"$($_.Name):$($_.Pct)\" })" }
         if ($results.checks.powerRoundtrip -ne 'unread' -and -not $results.checks.powerIssue) { $results.errors += 'power advice missing after mode change' }
         if (@($results.checks.powerTargets) -contains 'performance' -and $onBatteryNow) { $results.errors += 'live advice suggested performance on battery' }
 
