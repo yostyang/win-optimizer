@@ -57,8 +57,10 @@ jobs:
           } else { $md += "## Result: FAIL (no results.json)" }
           if (Test-Path "$out/crash.txt") { $md += "", "## Crash", '```', (Get-Content "$out/crash.txt" -Raw), '```' }
           $pngs = @(Get-ChildItem $out -Filter '*.png' -ErrorAction SilentlyContinue)
-          $md += "", "## Screenshots ($($pngs.Count))", ($pngs | ForEach-Object { "- $($_.Name) ($([int]($_.Length/1KB)) KB)" })
-          $md -join "`n" | Set-Content "$out/results.md" -Encoding UTF8
+          $md += ""
+          $md += "## Screenshots ($($pngs.Count))"
+          foreach ($f in $pngs) { $md += "- $($f.Name) ($([int]($f.Length/1KB)) KB)" }
+          ($md -join "`n") | Set-Content "$out/results.md" -Encoding UTF8
           Get-Content "$out/results.md"
 
       - name: Upload artifacts
