@@ -1818,12 +1818,10 @@ function Get-DoMode {
 function Get-OldTempFiles([string]$root, [int]$days) {
     if (-not $root -or -not (Test-Path -LiteralPath $root)) { return @() }
     $cut = (Get-Date).AddDays(-1 * $days)
-    $list = New-Object System.Collections.Generic.List[object]
-    Get-ChildItem -LiteralPath $root -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($list.Count -ge 400) { return }
-        try { if ($_.LastWriteTime -lt $cut) { $list.Add($_) } } catch { }
-    }
-    return @($list)
+    $files = @(Get-ChildItem -LiteralPath $root -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $cut } |
+        Select-Object -First 400)
+    return ,$files
 }
 function Move-FileToRecycle([string]$path) {
     # shell32 在 x64 / ARM64 上都是系统自带的。FOF_NO_UI 避免弹出对话框卡住。
@@ -2541,7 +2539,7 @@ function Invoke-TweakRoundtrip {
     } catch {
         Add-Log 'gate-win10' 'fail' $_.Exception.Message
     } finally { $script:MockBuild = $saved }
-    return @($log)
+    return @($log.ToArray())
 }
 function Invoke-WinOptSelfTest {
     $log = @(Invoke-TweakRoundtrip)
