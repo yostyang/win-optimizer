@@ -1,0 +1,70 @@
+name: smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse / lint WinOptimizer.ps1
+        run: |
+          $e = $null; $t = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$pwd/WinOptimizer.ps1", [ref]$t, [ref]$e)
+          if ($e) { $e | ForEach-Object { "::error file=WinOptimizer.ps1,line=$($_.Extent.StartLineNumber)::$($_.Message)" }; exit 1 }
+          "PARSE OK ($($t.EndBlock.Statements.Count) top-level statements)"
+
+      - name: Headless API smoke (no UI)
+        run: |
+          ./tests/Smoke-Headless.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: GUI smoke (load WPF, checkup, screenshots, exit)
+        run: |
+          $out = Join-Path $pwd 'smoke-out'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $env:WINOPT_SMOKE_OUT = $out
+          # Windows PowerShell 5.1 + STA is what the .bat uses; also try pwsh
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',"$pwd\WinOptimizer.ps1",'-Smoke') -PassThru -Wait
+          "GUI exit code: $($p.ExitCode)"
+          if (-not (Test-Path "$out/results.json")) { "::error::results.json missing — process likely crashed before writing"; Get-ChildItem $out -ErrorAction SilentlyContinue; exit 1 }
+          Get-Content "$out/results.json"
+          $j = Get-Content "$out/results.json" -Raw | ConvertFrom-Json
+          if (-not $j.ok) { "::error::smoke reported failures"; exit 1 }
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          $pngs = @(Get-ChildItem $out -Filter '*.png')
+          "Screenshots: $($pngs.Count)"
+          if ($pngs.Count -lt 1) { "::error::no screenshots"; exit 1 }
+
+      - name: Write results.md
+        if: always()
+        run: |
+          $out = 'smoke-out'
+          $md = @("# Windows一键优化 smoke", "", "- Runner: windows-latest", "- Time: $(Get-Date -Format o)", "")
+          if (Test-Path "$out/results.json") {
+            $j = Get-Content "$out/results.json" -Raw | ConvertFrom-Json
+            $md += "## Result: $(if ($j.ok) { 'PASS' } else { 'FAIL' })", ""
+            $md += '```json', (Get-Content "$out/results.json" -Raw), '```', ""
+            if ($j.errors) { $md += "## Errors", ($j.errors | ForEach-Object { "- $_" }) }
+          } else { $md += "## Result: FAIL (no results.json)" }
+          if (Test-Path "$out/crash.txt") { $md += "", "## Crash", '```', (Get-Content "$out/crash.txt" -Raw), '```' }
+          $pngs = @(Get-ChildItem $out -Filter '*.png' -ErrorAction SilentlyContinue)
+          $md += "", "## Screenshots ($($pngs.Count))", ($pngs | ForEach-Object { "- $($_.Name) ($([int]($_.Length/1KB)) KB)" })
+          $md -join "`n" | Set-Content "$out/results.md" -Encoding UTF8
+          Get-Content "$out/results.md"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-out
+          path: smoke-out/
+          if-no-files-found: warn

@@ -1,13 +1,24 @@
 ﻿# Windows一键优化 v0.1 —— PowerShell + WPF，单文件，无需安装
 # 原则：只在你点按钮时才动手；需要管理员权限的修复会单独弹出 UAC；不删除任何文件。
 #Requires -Version 5.1
+
+param(
+    [switch]$Smoke,          # CI：加载界面、跑体检、截图后退出，不进入交互
+    [int]$SmokeSeconds = 12  # 交互冒烟时保持窗口打开的秒数（0 = 一直开着）
+)
 $ErrorActionPreference = 'Stop'
 $AppVersion = '0.1'
 $AppName = 'Windows一键优化'
 
 if ([Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
-    Start-Process powershell.exe -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`"")
-    return
+    $extra = @()
+    if ($Smoke) { $extra += '-Smoke' }
+    if ($PSBoundParameters.ContainsKey('SmokeSeconds')) { $extra += @('-SmokeSeconds', "$SmokeSeconds") }
+    $exe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { (Get-Command pwsh).Source } else { "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" }
+    # 用当前进程同款宿主，并把 -Smoke 参数原样带过去
+    $argList = @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File', $PSCommandPath) + $extra
+    $p = Start-Process -FilePath $exe -ArgumentList $argList -Wait -PassThru
+    exit $p.ExitCode
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
@@ -921,4 +932,93 @@ $win.Add_ContentRendered({
     $timer.Start(); $fast.Start()
 })
 $win.Add_Closed({ $timer.Stop(); $fast.Stop() })
+
+# ---------------- CI / 冒烟 ----------------
+function Save-WindowPng([Windows.Window]$w, [string]$path) {
+    $w.UpdateLayout()
+    [Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [Windows.Threading.DispatcherPriority]::ApplicationIdle) | Out-Null
+    $dpi = 96.0
+    try {
+        $src = [Windows.PresentationSource]::FromVisual($w)
+        if ($src) { $dpi = 96.0 * $src.CompositionTarget.TransformToDevice.M11 }
+    } catch {}
+    $wpx = [math]::Max(1, [int]($w.ActualWidth  * $dpi / 96))
+    $hpx = [math]::Max(1, [int]($w.ActualHeight * $dpi / 96))
+    $rt = New-Object Windows.Media.Imaging.RenderTargetBitmap($wpx, $hpx, $dpi, $dpi, [Windows.Media.PixelFormats]::Pbgra32)
+    $rt.Render($w)
+    $enc = New-Object Windows.Media.Imaging.PngBitmapEncoder
+    $enc.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($rt))
+    $fs = [IO.File]::Create($path)
+    $enc.Save($fs); $fs.Close()
+}
+
+if ($Smoke -or $env:WINOPT_SMOKE -eq '1') {
+    $outDir = if ($env:WINOPT_SMOKE_OUT) { $env:WINOPT_SMOKE_OUT } else { Join-Path $PSScriptRoot 'smoke-out' }
+    if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+    $results = [ordered]@{ ok = $true; errors = @(); checks = [ordered]@{} }
+    try {
+        # 不阻塞 ShowDialog：先 Show，强制布局，截图，跑体检，再关掉
+        $win.Show()
+        $win.Activate()
+        $win.UpdateLayout()
+        for ($i = 0; $i -lt 20; $i++) {
+            [Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [Windows.Threading.DispatcherPriority]::Background) | Out-Null
+            Start-Sleep -Milliseconds 100
+        }
+        Update-Overview
+        try { Invoke-Checkup; $results.checks.checkup = $true; $results.checks.score = $ui.ScoreText.Text; $results.checks.issues = @($script:Issues | ForEach-Object { $_.Title }) }
+        catch { $results.checks.checkup = $false; $results.errors += "checkup: $($_.Exception.Message)" }
+        try { Update-Processes; $results.checks.processes = @($ui.ProcList.ItemsSource).Count } catch { $results.errors += "proc: $($_.Exception.Message)" }
+        try { Update-Startup;  $results.checks.startup   = @($ui.StartList.ItemsSource).Count } catch { $results.errors += "startup: $($_.Exception.Message)" }
+        try { Update-Browsers; $results.checks.browsers  = @($ui.BrList.ItemsSource).Count } catch { $results.errors += "browsers: $($_.Exception.Message)" }
+        try { Update-Dns;      $results.checks.dns = $ui.DnsText.Text } catch { $results.errors += "dns: $($_.Exception.Message)" }
+        try { Update-Display;  $results.checks.anim = $ui.AnimText.Text; $results.checks.trans = $ui.TransText.Text } catch { $results.errors += "display: $($_.Exception.Message)" }
+        try { Update-Battery;  $results.checks.battery = $ui.BatText.Text } catch { $results.errors += "battery: $($_.Exception.Message)" }
+
+        # 切每个标签页截一张
+        for ($t = 0; $t -lt $ui.Tabs.Items.Count; $t++) {
+            $ui.Tabs.SelectedIndex = $t
+            $win.UpdateLayout()
+            for ($i = 0; $i -lt 5; $i++) { [Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [Windows.Threading.DispatcherPriority]::Background) | Out-Null; Start-Sleep -Milliseconds 50 }
+            $name = switch ($t) { 0 {'checkup'} 1 {'processes'} 2 {'startup'} 3 {'browsers'} 4 {'network'} 5 {'display'} 6 {'battery'} default {"tab$t"} }
+            try { Save-WindowPng $win (Join-Path $outDir "tab-$name.png") } catch { $results.errors += "shot ${name}: $($_.Exception.Message)" }
+        }
+        $ui.Tabs.SelectedIndex = 0
+        $win.UpdateLayout()
+        Save-WindowPng $win (Join-Path $outDir 'main.png')
+
+        # 非 UI 探测
+        try {
+            $o = Get-Overview
+            $results.checks.cpu = $o.Cpu; $results.checks.memFreeMB = [int]($o.MemFree/1MB)
+            $results.checks.ping = @()
+            $ping = New-Object System.Net.NetworkInformation.Ping
+            foreach ($target in @('223.5.5.5','1.1.1.1')) {
+                try { $r = $ping.Send($target, 1500); $results.checks.ping += "$target=$($r.Status)/$($r.RoundtripTime)ms" } catch { $results.checks.ping += "$target=fail" }
+            }
+        } catch { $results.errors += "probe: $($_.Exception.Message)" }
+
+        if ($results.errors.Count) { $results.ok = $false }
+        ($results | ConvertTo-Json -Depth 6) | Set-Content -Path (Join-Path $outDir 'results.json') -Encoding UTF8
+        $win.Close()
+        if (-not $results.ok) { exit 1 } else { exit 0 }
+    } catch {
+        $_ | Out-String | Set-Content (Join-Path $outDir 'crash.txt') -Encoding UTF8
+        try { $win.Close() } catch {}
+        exit 2
+    }
+}
+
+if ($SmokeSeconds -gt 0 -and $env:WINOPT_SMOKE_SECONDS) { $SmokeSeconds = [int]$env:WINOPT_SMOKE_SECONDS }
+if ($SmokeSeconds -gt 0) {
+    $win.Show()
+    $deadline = (Get-Date).AddSeconds($SmokeSeconds)
+    while ((Get-Date) -lt $deadline) {
+        [Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [Windows.Threading.DispatcherPriority]::Background) | Out-Null
+        Start-Sleep -Milliseconds 200
+    }
+    $win.Close()
+    exit 0
+}
+
 [void]$win.ShowDialog()
