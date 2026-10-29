@@ -12,6 +12,8 @@
 powershell -STA -ExecutionPolicy Bypass -File .\WinOptimizer.ps1
 # CI 冒烟（加载界面、体检、截图后退出）
 powershell -STA -ExecutionPolicy Bypass -File .\WinOptimizer.ps1 -Smoke
+# 不打开窗口：按 Windows 10（19045）检查建议项，并做可恢复的往返
+powershell -STA -ExecutionPolicy Bypass -File .\WinOptimizer.ps1 -SelfTest -MockBuild 19045
 ```
 
 ## License
