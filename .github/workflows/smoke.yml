@@ -21,6 +21,12 @@ jobs:
           if ($e) { $e | ForEach-Object { "::error file=WinOptimizer.ps1,line=$($_.Extent.StartLineNumber)::$($_.Message)" }; exit 1 }
           "PARSE OK ($($t.EndBlock.Statements.Count) top-level statements)"
 
+      - name: Win10-gated self-test (PowerShell 5.1, mock build 19045)
+        run: |
+          $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          & $exe -NoProfile -STA -ExecutionPolicy Bypass -File "$pwd\WinOptimizer.ps1" -SelfTest -MockBuild 19045
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Headless API smoke (no UI)
         run: |
           ./tests/Smoke-Headless.ps1
@@ -40,6 +46,19 @@ jobs:
           $j = Get-Content "$out/results.json" -Raw | ConvertFrom-Json
           if (-not $j.ok) { "::error::smoke reported failures"; exit 1 }
           if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          $cpuN = [int]$j.checks.cpu
+          if ($cpuN -lt 10 -or $cpuN -gt 100) { "::error::cpu $cpuN not in 10..100 after stress (source $($j.checks.cpuSource))"; exit 1 }
+          if ($j.checks.cpuSource -notin @('GetSystemTimes','PerformanceCounter','PerfRaw')) { "::error::unexpected cpu source $($j.checks.cpuSource)"; exit 1 }
+          foreach ($flag in @('childIssue','priorityOk','gracefulClose','protectedOk','powerRestored','powerAdviceOk')) {
+            if (-not $j.checks.$flag) { "::error::check $flag failed"; exit 1 }
+          }
+          if ([string]$j.checks.powerRoundtrip -eq 'unread') { "::error::power mode was not switched"; exit 1 }
+          "CPU $cpuN% via $($j.checks.cpuSource); avg=$($j.checks.cpuAvg); power=$($j.checks.powerRoundtrip)"
+          if (-not $j.checks.tweaks) { "::error::tweak roundtrip table missing"; exit 1 }
+          "## Tweak roundtrip"
+          $j.checks.tweaks | ForEach-Object { $_ }
+          $fails = @($j.checks.tweaks | Where-Object { $_ -match '=fail' })
+          if ($fails.Count) { "::error::tweak failures: $($fails -join ', ')"; exit 1 }
           $pngs = @(Get-ChildItem $out -Filter '*.png')
           "Screenshots: $($pngs.Count)"
           if ($pngs.Count -lt 1) { "::error::no screenshots"; exit 1 }
@@ -48,7 +67,8 @@ jobs:
         if: always()
         run: |
           $out = 'smoke-out'
-          $md = @("# Windows一键优化 smoke", "", "- Runner: windows-latest", "- Time: $(Get-Date -Format o)", "")
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $md = @("# Windows一键优化 smoke", "", "- Runner: windows-latest（没有 Windows 10 托管机，Win10 路径用 -MockBuild 19045）", "- Time: $(Get-Date -Format o)", "")
           if (Test-Path "$out/results.json") {
             $j = Get-Content "$out/results.json" -Raw | ConvertFrom-Json
             $md += "## Result: $(if ($j.ok) { 'PASS' } else { 'FAIL' })", ""
@@ -63,10 +83,23 @@ jobs:
           ($md -join "`n") | Set-Content "$out/results.md" -Encoding UTF8
           Get-Content "$out/results.md"
 
+      - name: Build release zip
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $zip = Join-Path $pwd 'dist/WinOptimizer-0.2.zip'
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path @(
+            '启动.bat','调试启动（显示错误）.bat','WinOptimizer.ps1','使用说明.txt'
+          ) -DestinationPath $zip
+          Get-Item $zip | Format-List Name, Length
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: smoke-out
-          path: smoke-out/
+          path: |
+            smoke-out/
+            dist/WinOptimizer-0.2.zip
           if-no-files-found: warn
